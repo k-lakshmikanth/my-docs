@@ -1,0 +1,92 @@
+# This workflow is used to automate deployment of the ICR Ingestion ADF into UAT and PROD environments.
+# Overview: This workflow file contains 3 jobs:
+# 1. build_ARM_templates - This job checks out the dev ADF JSON/config from the branch (ref) that triggered the workflow,
+#                           builds the ARM template files (more importantly the ARMTemplate ForFactory.json)
+#                           and finally uploads it into a temporary storage (artifact form) for later download by
+#                           the next job that uses the .json file as input.
+
+# 2. deploy_to_uat_ingestion_adf - This job depends on the successful completion of build_ARM_templates job.
+#                                 This job uses the previously-job-generated ARMTemplate For Factory.json along
+#                                 with the UAT-environment-specific parameters file to deploy to uat ADF
+
+# 3. deploy_to_production_ingestion_adf - This job depends on the successful completion of build_ARM_templates job.
+#                                         This job uses the previously-job-generated ARMTemplate For Factory.json along
+#                                         with the production-environment-specific parameters file to deploy to prod ADF
+
+# NOTE: The build_ARM_templates job always runs, but either (but not both) of the deploy_to_uat_ingestion_adf OR
+# deploy_to_production_ingestion_adf jobs will run for a particular invocation of this workflow file. Which of these jobs runs
+# depends on the branch (ref) that triggered this workflow.
+# Workflow definition begins from here on
+name: Deploy ICR Ingestion ADF
+run-name: Deploy ICR Ingestion ADF
+# Controls the trigger for when this workflow will run
+on:
+# Following line configures this workflow to be manually triggered from the Actions tab
+# The manual trigger option is configured for scenarios where a manual re-run would be necessary without
+# having to rely on a pull request (PR) (e.g. a PR-triggered run fails for whatever reason and we need to re-run manually).
+workflow_dispatch:
+# Following line configures this workflow to be triggered when pull requests (PRs) reach the closed (completed) state,
+# specifically when the PR has target/base PR branch being either 'uat' or 'production'
+pull_request:
+types: [closed]
+branches: [uat, production]
+jobs:
+build_ARM_templates:
+name: Build ARM templates
+runs-on: ubuntu- latest
+steps:
+- name: Checkout code
+uses: actions/checkout@v3.2.0
+- name: Export ARM templates
+id: export
+uses: Azure/data-factory-export-action@v1.2.0
+with:
+# Since our ADF repository holds all ADF resources under the /ADF Integration folder, below path argument has to be provided
+path: ADF Integration
+# Pass in the dev ADF details like subscription ID, Resource Group Name and Data Factory Name, else the action fails
+# with ARM template validation errors and is unable to proceed with ARM template generation steps
+id: /subscriptions/${{ secrets. ICR_DEV_INGESTION_ADF_SUBSCRIPTION_ID}}/resourceGroups/${{ secrets. ICR_DEV_INGESTION_ADF_RESOURCE_GROUP_NAME}}/providers/Microsoft.D
+# Post successful export/generation of ARM templates, upload to a temp storage location for later download
+# NOTE: Post workflow completion, this uploaded artifact can be downloaded in zip format for upto 90 days (or configured retention age)
+# from when this workflow run was initiated.
+- name: Upload ARM templates artifact
+uses: actions/upload-artifact@v3.1.1
+with:
+name: armtemplates
+path: ${{ steps.export.outputs.arm-template-directory }}
+if-no-files-found: error
+deploy_to_uat_ingestion_adf:
+# Only run this job if the triggering branch is 'uat'
+if: ${{ github.ref == 'refs/heads/uat' || github.ref_name == 'uat' }}
+# Only run this job if the previous build_ARM_templates job has a success status
+needs: [build_ARM_templates]
+name: Deploy to uat ADF
+runs-on: ubuntu-latest
+# Specify environment tag to kick in the environment protection rule namely, manual approval to proceed with deployment
+environment: uat
+steps:
+name: Checkout code
+uses: actions/checkout@v3.2.0
+# Create an Azure security context/session using the credentials stored in the GitHub repository key
+# The credential key value is stored in the following format (the values between the <<>> need to be replaced accordingly):
+# ICR_UAT_SPN_KEY_CREDENTIALS JSON
+# {
+# "clientId": "<<the SPN's client ID or ApplicationID>>",
+# "client Secret": "<<the SPN's key value, obtained from SPN management portal>>",
+# "subscriptionId": "<<the subscription ID of the SPN's Azure subscription>>",
+# "tenantId": "<<the Azure directory/tenant ID where the SPN resides in>>",
+# "resourceManager EndpointUrl" : "https://management.azure.com/"
+# }
+name: Login to Azure
+uses: azure/login@v1.4.6
+with:
+creds: ${{secrets. ICR_UAT_SPN_KEY_CREDENTIALS_JSON }}
+enable-AzPSSession: true
+# Download the ARM artifacts from the temp storage location
+- name: Download ARM templates artifact
+uses:
+actions/download-artifact@v3.0.1
+with:
+name: armtemplates
+path: armtemplates
+
