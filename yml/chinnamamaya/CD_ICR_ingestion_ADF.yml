@@ -1,0 +1,104 @@
+name: Deploy ICR Ingestion ADF
+run-name: Deploy ICR Ingestion ADF
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+    branches: [uat, production]
+    
+jobs:
+  build_ARM_templates:
+    name: Build ARM templates
+    runs-on: ubuntu- latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3.2.0
+      - name: Export ARM templates
+        id: export
+        uses: Azure/data-factory-export-action@v1.2.0
+        with:
+          path: ADF Integration
+          id: /subscriptions/${{ secrets. ICR_DEV_INGESTION_ADF_SUBSCRIPTION_ID}}/resourceGroups/${{ secrets. ICR_DEV_INGESTION_ADF_RESOURCE_GROUP_NAME}}/providers/Microsoft.D
+      - name: Upload ARM templates artifact
+        uses: actions/upload-artifact@v3.1.1
+        with:
+        name: armtemplates
+        path: ${{ steps.export.outputs.arm-template-directory }}
+        if-no-files-found: error
+
+  deploy_to_uat_ingestion_adf:
+    if: ${{ github.ref == 'refs/heads/uat' || github.ref_name == 'uat' }}
+    needs: [build_ARM_templates]
+    name: Deploy to uat ADF
+    runs-on: ubuntu-latest
+    environment: uat
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3.2.0
+
+      - name: Login to Azure
+        uses: azure/login@v1.4.6
+        with:
+          creds: ${{secrets. ICR_UAT_SPN_KEY_CREDENTIALS_JSON }}
+          enable-AzPSSession: true
+
+      - name: Download ARM templates artifact
+        uses: actions/download-artifact@v3.0.1
+        with:
+          name: armtemplates
+          path: armtemplates
+
+      - name: Deploy to uat
+        uses: Azure/data-factory-deploy-action@v1.2.0
+        with:
+          resourceGroupName: ${{ secrets. ICR_UAT INGESTION_ADF_RESOURCE_GROUP_NAME}}
+          dataFactoryName: ${{ secrets. ICR_UAT INGESTION_DATA_FACTORY_NAME}}
+          armTemplateFile: ./armtemplates/ARMTemplateForFactory.json
+          armTemplateParametersFile: ./uat-ingestion-adf-ARMTemplateParametersForFactory.json
+
+  deploy_to_production_ingestion_adf:
+    #Only run this job if the triggering branch is 'production'
+    if: ${{ github.ref 'refs/heads/production' || github.ref_name == 'production' }}
+    # Only run this job if the previous 'build_ARM_templates job has a success status
+    needs: [build_ARM_templates]
+    name: Deploy to production ADF runs-on: ubuntu-latest
+    # Specify environment tag to kick in the environment protection rule - namely, manual approval to proceed with deployment
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3.2.0
+      # Create an Azure security context/session using the credentials stored in the GitHub repository key
+      # The credential key value is stored in the following format (the values between the <<>> need to be replaced accordingly):
+      # ICR_PROD_SPN_KEY_CREDENTIALS _JSON
+      # {
+      # "clientId": "<<the SPN's clientID or Application ID>>",
+      # "clientSecret": "<<the SPN's key value, obtained from SPN management portal>>",
+      # "subscriptionId": "<<the subscription ID of the SPN's Azure subscription>>",
+      # "tenantId": "<<the Azure directory/tenant ID where the SPN resides in>>",
+      # "resourceManagerEndpointUrl": "https://management.azure.com/"
+      # }
+      - name: Login to Azure
+        uses: azure/login@v1.4.6
+        with:
+          creds: ${{ secrets. ICR_PROD_SPN_KEY_CREDENTIALS JSON }}
+          enable-AzPSSession: true
+
+      # Download the ARM artifacts from the temp storage location 
+      - name: Download ARM templates artifact
+        uses: actions/download-artifact@v3.0.1
+        with:
+          name: armtemplates
+          path: armtemplates
+
+      # Initiate deployment into production ADF by providing the downloaded ARMTemplateForFactory.json and
+      #prod-environment specific parameters file
+      - name: Deploy to production
+        uses: Azure/data-factory-deploy-action@v1.2.0
+        with:
+          resourceGroupName: ${{ secrets. ICR_PROD_INGESTION_ADF_RESOURCE_GROUP_NAME}} 
+          dataFactoryName: ${{ secrets. ICR_PROD_INGESTION_DATA_FACTORY_NAME}} 
+          armTemplateFile: ./armtemplates/ARMTemplateForFactory.json 
+          armTemplateParameters File: ./production-ingestion-ad f-ARMTemplateParametersForFactory.json
+
+################### End of workflow file ###################
